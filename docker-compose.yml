@@ -1,0 +1,285 @@
+version: '3'
+
+networks:
+  frontend:
+    driver: ${NETWORKS_DRIVER}
+  backend:
+    driver: ${NETWORKS_DRIVER}
+
+volumes:
+  mysql:
+    driver: ${VOLUMES_DRIVER}
+  mssql:
+    driver: ${VOLUMES_DRIVER}
+  memcached:
+    driver: ${VOLUMES_DRIVER}
+  redis:
+    driver: ${VOLUMES_DRIVER}
+  mongo:
+    driver: ${VOLUMES_DRIVER}
+  elasticsearch:
+    driver: ${VOLUMES_DRIVER}
+
+services:
+
+### NGINX Server #########################################
+    nginx:
+      build:
+        context: ./nginx
+        args:
+          - CHANGE_SOURCE=${CHANGE_SOURCE}
+      volumes:
+        - ${APP_CODE_PATH_HOST}:${APP_CODE_PATH_CONTAINER}
+        - ${NGINX_HOST_LOG_PATH}:/var/log/nginx
+        - ${NGINX_SITES_PATH}:/etc/nginx/sites-available
+      ports:
+        - "${NGINX_HOST_HTTP_PORT}:80"
+        - "${NGINX_HOST_HTTPS_PORT}:443"
+      networks:
+        - frontend
+        - backend
+
+### MySQL ################################################
+    mysql:
+      build:
+        context: ./mysql
+        args:
+          - MYSQL_VERSION=${MYSQL_VERSION}
+      environment:
+        - MYSQL_DATABASE=${MYSQL_DATABASE}
+        - MYSQL_USER=${MYSQL_USER}
+        - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+        - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+        - TZ=${WORKSPACE_TIMEZONE}
+      volumes:
+        - ${DATA_PATH_HOST}/mysql:/var/lib/mysql
+        - ${MYSQL_ENTRYPOINT_INITDB}:/docker-entrypoint-initdb.d
+      ports:
+        - "${MYSQL_PORT}:3306"
+      networks:
+        - backend
+
+### MSSQL ################################################
+    mssql:
+      build:
+        context: ./mssql
+      environment:
+        - MSSQL_DATABASE=${MSSQL_DATABASE}
+        - SA_PASSWORD=${MSSQL_PASSWORD}
+        - ACCEPT_EULA=Y
+      volumes:
+        - ${DATA_PATH_HOST}/mssql:/var/opt/mssql
+      ports:
+        - "${MSSQL_PORT}:1433"
+      networks:
+        - backend
+
+### MongoDB ##############################################
+    mongo:
+      build: ./mongo
+      ports:
+        - "${MONGODB_PORT}:27017"
+      volumes:
+        - ${DATA_PATH_HOST}/mongo:/data/db
+      networks:
+        - backend
+
+### Redis ################################################
+    redis:
+      build: ./redis
+      volumes:
+        - ${DATA_PATH_HOST}/redis:/data
+      ports:
+        - "${REDIS_PORT}:6379"
+      networks:
+        - backend
+
+### Memcached ############################################
+    memcached:
+      build: ./memcached
+      volumes:
+        - ${DATA_PATH_HOST}/memcached:/var/lib/memcached
+      ports:
+        - "${MEMCACHED_HOST_PORT}:11211"
+      networks:
+        - backend
+
+### RabbitMQ #############################################
+    rabbitmq:
+      build: ./rabbitmq
+      ports:
+        - "${RABBITMQ_NODE_HOST_PORT}:5672"
+        - "${RABBITMQ_MANAGEMENT_HTTP_HOST_PORT}:15672"
+        - "${RABBITMQ_MANAGEMENT_HTTPS_HOST_PORT}:15671"
+      privileged: true
+      environment:
+        - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+        - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      networks:
+        - backend
+
+### ElasticSearch ########################################
+    elasticsearch:
+      build: ./elasticsearch
+      volumes:
+        - elasticsearch:/usr/share/elasticsearch/data
+      environment:
+        - cluster.name=laradock-cluster
+        - bootstrap.memory_lock=true
+        - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      ulimits:
+        memlock:
+          soft: -1
+          hard: -1
+      ports:
+        - "${ELASTICSEARCH_HOST_HTTP_PORT}:9200"
+        - "${ELASTICSEARCH_HOST_TRANSPORT_PORT}:9300"
+      networks:
+        - frontend
+
+### Jenkins ###################################################
+    jenkins:
+      build: ./jenkins
+      environment:
+        JAVA_OPTS: "-Djava.awt.headless=true"
+      ports:
+        - "${JENKINS_HOST_SLAVE_AGENT_PORT}:50000"
+        - "${JENKINS_HOST_HTTP_PORT}:8080"
+      privileged: true
+      volumes:
+        - ${JENKINS_HOME}:/var/jenkins_home
+        - /var/run/docker.sock:/var/run/docker.sock
+      networks:
+        - frontend
+        - backend
+        
+### Solr ################################################
+    solr:
+      build:
+        context: ./solr
+        args:
+          - SOLR_VERSION=${SOLR_VERSION}
+          - SOLR_DATAIMPORTHANDLER_MYSQL=${SOLR_DATAIMPORTHANDLER_MYSQL}
+      volumes:
+        - ${DATA_PATH_HOST}/solr:/opt/solr/server/solr/mycores
+      ports:
+        - "${SOLR_PORT}:8983"
+      networks:
+        - backend
+
+### Gitlab ################################################
+    gitlab:
+      build:
+        context: ./gitlab
+      environment:
+        GITLAB_OMNIBUS_CONFIG: |
+          external_url '${GITLAB_DOMAIN_NAME}' 
+          redis['enable'] = false 
+          nginx['listen_https'] = false 
+          nginx['listen_port'] = 80 
+          postgresql['enable'] = false 
+          gitlab_rails['trusted_proxies'] = ['caddy','nginx','apache2'] 
+          gitlab_rails['redis_host'] = 'redis' 
+          gitlab_rails['redis_database'] = 8
+          gitlab_rails['db_host'] = 'postgres' 
+          gitlab_rails['db_username'] = 'laradock_gitlab'
+          gitlab_rails['db_password'] = 'laradock_gitlab'
+          gitlab_rails['db_database'] = 'laradock_gitlab'
+          gitlab_rails['initial_root_password'] = '${GITLAB_ROOT_PASSWORD}'
+          gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_HOST_SSH_PORT}
+      volumes:
+        - ${DATA_PATH_HOST}/gitlab/config:/etc/gitlab
+        - ${DATA_PATH_HOST}/gitlab/data:/var/opt/gitlab
+        - ${GITLAB_HOST_LOG_PATH}:/var/log/gitlab
+      ports:
+        - "${GITLAB_HOST_HTTP_PORT}:80"
+        - "${GITLAB_HOST_HTTPS_PORT}:443"
+        - "${GITLAB_HOST_SSH_PORT}:22"
+      networks:
+        - backend
+      depends_on:
+        - redis
+        - postgres
+    gitlab-runner:
+      image: gitlab/gitlab-runner:latest
+      environment:
+        - CI_SERVER_URL=${GITLAB_DOMAIN_NAME}
+      volumes:
+        - ${DATA_PATH_HOST}/gitlab/runner:/etc/gitlab-runner
+        - /var/run/docker.sock:/var/run/docker.sock:rw
+      restart: always
+      
+
+### Docker-in-Docker ################################################
+    docker-in-docker:
+      image: docker:dind
+      privileged: true
+      volumes:
+        - ${APP_CODE_PATH_HOST}:${APP_CODE_PATH_CONTAINER}
+      expose:
+        - 2375
+      networks:
+        - backend
+
+### MongoWebUI ################################################
+    mongo-webui:
+      build:
+        context: ./mongo-webui
+      restart: always
+      environment:
+        - ROOT_URL=${MONGO_WEBUI_ROOT_URL}
+        - MONGO_URL=${MONGO_WEBUI_MONGO_URL}
+        - INSTALL_MONGO=${MONGO_WEBUI_INSTALL_MONGO}
+      volumes:
+        - ${DATA_PATH_HOST}/mongo-webui:/data/db
+      ports:
+        - "${MONGO_WEBUI_PORT}:3000"
+      networks:
+        - backend
+      depends_on:
+        - mongo
+
+### DOCKER-REGISTRY ################################################
+    docker-registry:
+      build:
+        context: ./docker-registry
+      volumes:
+        - /etc/localtime:/etc/localtime:ro
+        - ${DATA_PATH_HOST}/docker-registry:/var/lib/registry
+      ports:
+        - "${DOCKER_REGISTRY_PORT}:5000"
+      networks:
+        - backend
+
+### DOCKER-WEB-UI ################################################
+    docker-web-ui:
+      build:
+        context: ./docker-web-ui
+      environment:
+        - TZ=${WORKSPACE_TIMEZONE}
+        - ENV_DOCKER_REGISTRY_HOST=${DOCKER_WEBUI_REGISTRY_HOST}
+        - ENV_DOCKER_REGISTRY_PORT=${DOCKER_WEBUI_REGISTRY_PORT}
+        - ENV_DOCKER_REGISTRY_USE_SSL=${DOCKER_REGISTRY_USE_SSL}
+        - ENV_MODE_BROWSE_ONLY=${DOCKER_REGISTRY_BROWSE_ONLY}
+      volumes:
+        - /etc/localtime:/etc/localtime:ro
+      ports:
+        - "${DOCKER_WEBUI_PORT}:80"
+      networks:
+        - frontend
+        - backend
+
+### PostgreSQL ###########################################
+    postgres:
+      build: ./postgres
+      volumes:
+        - ${DATA_PATH_HOST}/postgres:/var/lib/postgresql/data
+        - ${POSTGRES_ENTRYPOINT_INITDB}:/docker-entrypoint-initdb.d
+      ports:
+        - "${POSTGRES_PORT}:5432"
+      environment:
+        - POSTGRES_DB=${POSTGRES_DB}
+        - POSTGRES_USER=${POSTGRES_USER}
+        - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      networks:
+        - backend
